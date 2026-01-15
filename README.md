@@ -639,7 +639,7 @@ config_global_resolver(diagram)
 
 `LoadBy` is a syntax sugar that simplifies code. It automatically generates corresponding `resolve_` methods based on relationship definitions in ERD and injects DataLoader. After using `LoadBy`, there's no need to manually write `resolve_` methods—simply declare the field and data will be loaded automatically.
 
-The subsequent examples use `DefineSubset`, which will be详细介绍 in later sections.
+The subsequent examples use `DefineSubset`, which will be introduced in detail in later sections.
 
 **Important Note**: The parameter of `LoadBy` corresponds to the `field` field of the `Relationship` definition in ERD (i.e., the foreign key field name), not the target field name. For example, `LoadBy('owner_id')` means using the Relationship definition with `field='owner_id'` from the ERD.
 
