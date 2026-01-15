@@ -638,6 +638,143 @@ diagram = BaseEntity.get_diagram()
 config_global_resolver(diagram)
 ```
 
+#### 使用 LoadBy 来加载数据
+
+`LoadBy` 是一个简化代码的语法糖，它会自动根据 ERD 中定义的关系生成对应的 `resolve_` 方法并注入 DataLoader。使用 `LoadBy` 后，无需手动编写 `resolve_` 方法，只需声明字段即可自动加载数据。
+
+后续示例代码中出现的 DefineSubset 会在后面详细介绍。
+
+**重要说明**：`LoadBy` 的参数对应的是 ERD 中 `Relationship` 定义的 `field` 字段（即外键字段名），而不是目标字段名。例如 `LoadBy('owner_id')` 表示使用 ERD 中 `field='owner_id'` 的那个 Relationship 定义。
+
+**工作原理**
+
+```python
+# ERD 中的关系定义
+class TaskEntity(BaseModel, BaseEntity):
+    __relationships__ = [
+        Relationship(field='owner_id', target_kls=UserEntity, loader=user_loader),
+    ]
+    owner_id: int  # <- 这是外键字段
+
+# 手动写 resolve 方法的传统方式
+class TaskResponse(BaseModel):
+    owner_id: int
+    owner: Optional[UserResponse] = None
+
+    def resolve_owner(self, loader=Loader(user_loader)):
+        return loader.load(self.owner_id)
+
+# 使用 LoadBy 的简化方式（等价于上面）
+class TaskResponse(DefineSubset):
+    __subset__ = (TaskEntity, ('id', 'name', 'owner_id'))
+    owner: Annotated[Optional[UserResponse], LoadBy('owner_id')] = None
+    #                                        ^^^^^^^^
+    #                          这是 ERD 中 Relationship 的 field 字段名
+    #                          LoadBy 会自动找到 field='owner_id' 的 Relationship
+    #                          并使用该关系定义中的 loader 和 target_kls
+```
+
+**基础示例**
+
+```python
+from pydantic import BaseModel, Annotated
+from pydantic_resolve import DefineSubset, LoadBy, Resolver
+
+# 假设已经定义了 TaskEntity 及其关系：
+class TaskEntity(BaseModel, BaseEntity):
+    __relationships__ = [
+        Relationship(field='story_id', target_kls=StoryEntity, loader=story_loader),
+        Relationship(field='owner_id', target_kls=UserEntity, loader=user_loader),
+    ]
+    id: int
+    name: str
+    owner_id: int
+    story_id: int
+
+# 1. 只需要基础字段，不需要关联数据
+class TaskSummaryResponse(DefineSubset):
+    __subset__ = (TaskEntity, ('id', 'name'))
+
+# 2. 需要包含 owner 关系
+class TaskWithOwnerResponse(DefineSubset):
+    __subset__ = (TaskEntity, ('id', 'name', 'owner_id'))
+    # LoadBy 自动使用 ERD 中 owner_id 关系的 user_loader
+    owner: Annotated[Optional[UserResponse], LoadBy('owner_id')] = None
+
+# 3. 需要包含 story 关系
+class TaskWithStoryResponse(DefineSubset):
+    __subset__ = (TaskEntity, ('id', 'name', 'story_id'))
+    # LoadBy 自动使用 ERD 中 story_id 关系的 story_loader
+    story: Annotated[Optional[StoryResponse], LoadBy('story_id')] = None
+
+# 4. 需要同时包含多个关系
+class TaskDetailResponse(DefineSubset):
+    __subset__ = (TaskEntity, ('id', 'name', 'owner_id', 'story_id'))
+    owner: Annotated[Optional[UserResponse], LoadBy('owner_id')] = None
+    story: Annotated[Optional[StoryResponse], LoadBy('story_id')] = None
+```
+
+**实际使用**
+
+```python
+from fastapi import APIRouter
+from sqlalchemy.ext.asyncio import AsyncSession
+
+router = APIRouter(prefix="/tasks", tags=['tasks'])
+
+@router.get("/{task_id}", response_model=TaskWithOwnerResponse)
+async def get_task(task_id: int, session: AsyncSession = Depends(get_session)):
+    # 1. 从数据库获取基础数据
+    task = await session.get(Task, task_id)
+    await session.close()
+
+    # 2. 转换为 Response Model
+    task_response = TaskWithOwnerResponse.model_validate(task)
+
+    # 3. Resolver 会自动处理 LoadBy 标注的字段
+    result = await Resolver().resolve(task_response)
+    return result
+
+# LoadBy 自动生成的 resolve 方法会在解析时被调用
+# 内部使用 ERD 中定义的 user_loader 进行批量加载
+```
+
+**多层嵌套示例**
+
+```python
+# 定义多层的 Response Model
+class UserResponse(DefineSubset):
+    __subset__ = (UserEntity, ('id', 'name'))
+
+class TaskResponse(DefineSubset):
+    __subset__ = (TaskEntity, ('id', 'name'))
+    owner: Annotated[Optional[UserResponse], LoadBy('owner_id')] = None
+
+class StoryResponse(DefineSubset):
+    __subset__ = (StoryEntity, ('id', 'name'))
+    tasks: Annotated[list[TaskResponse], LoadBy('id')] = []
+
+class SprintResponse(DefineSubset):
+    __subset__ = (SprintEntity, ('id', 'name'))
+    stories: Annotated[list[StoryResponse], LoadBy('id')] = []
+
+# 使用
+@router.get("/sprints/{sprint_id}", response_model=SprintResponse)
+async def get_sprint(sprint_id: int, session: AsyncSession = Depends(get_session)):
+    sprint = await session.get(Sprint, sprint_id)
+    await session.close()
+
+    sprint_response = SprintResponse.model_validate(sprint)
+    result = await Resolver().resolve(sprint_response)
+
+    # LoadBy 会自动处理所有层级的关联关系：
+    # - SprintResponse.stories 使用 story_loader
+    # - StoryResponse.tasks 使用 task_loader
+    # - TaskResponse.owner 使用 user_loader
+    # 所有 DataLoader 都会自动批量加载，避免 N+1 问题
+    return result
+```
+
 #### ERD 的关键特性
 
 **1. 业务语义优先**
