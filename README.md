@@ -1034,7 +1034,7 @@ DataLoader's working principle is based on intelligent batching and caching mech
 
 This mechanism brings three key features. First is auto-batching: individual requests are automatically merged into batch requests without developers manually writing batch logic. Second is smart caching: the same ID is only queried once per resolution cycle, duplicate requests directly return cached results. Third is concurrent scheduling: leveraging Python's event loop mechanism to automatically coordinate batch timing, developers don't need to care about underlying scheduling details.
 
-#### DefineSubset: Field Selection and Reuse
+### 3.4 DefineSubset: Field Selection and Reuse
 
 In actual development, different APIs often need to return different field combinations of the same entity. For example, one API only needs user basic info (id, name), another needs user detailed info (id, name, email), and yet another needs user statistics. If you define a complete Response Model for each API, it produces massive code duplication. `DefineSubset` provides an elegant way to reuse Entity definitions by selecting only needed fields.
 
@@ -1123,7 +1123,7 @@ class TaskWithStoryResponse(DefineSubset):
 
 `DefineSubset` embodies the design philosophy of "define once, reuse everywhere." Entity is the complete definition of business concepts, the "single source of truth"; Response Model is field selection for specific use cases, an "adapter for usage scenarios." This separation ensures consistency of business definitions while retaining enough flexibility to adapt to various API needs.
 
-### 3.4 Resolve and Post: Data Assembly and Computation
+### 3.5 Resolve and Post: Data Assembly and Computation
 
 #### Resolve: Declaring Data Dependencies
 
@@ -1164,7 +1164,7 @@ class StoryResponse(BaseModel):
 
 Execution order is carefully designed to ensure data dependency correctness. First execute all resolve methods—these can run in parallel since they have no dependencies. Then wait for all async operations to complete, ensuring all associated data is loaded. Finally execute all post methods—these run serially because they might need to access data loaded by resolve methods, or perform cross-field data computation. This two-phase design guarantees that when computing derived fields, all base data is ready.
 
-### 3.5 Cross-Layer Data Transfer
+### 3.6 Cross-Layer Data Transfer
 
 #### Expose: Parent Exposes Data to Children
 
@@ -1233,7 +1233,7 @@ Story
 Story.related_users: [Alice, Bob]
 ```
 
-### 3.6 Summary
+### 3.7 Summary
 
 Pydantic-Resolve abstracts common patterns in building business data at appropriate granularity through multiple dimensions, forming a simple yet powerful toolkit.
 
