@@ -1312,6 +1312,72 @@ class StoryResponse(BaseModel):
 
 ### 3.6 跨层数据传递
 
+#### 为什么需要跨层数据传递？
+
+在业务场景中，子节点常需访问父节点数据，或父节点需聚合子节点数据。传统方式需要编写额外的循环来展开数据，导致代码冗长且难以维护。
+
+**问题示例**：
+
+```python
+# ❌ 传统方式：多层嵌套循环
+async def get_sprint_with_stats(sprint_id: int, session: AsyncSession):
+    sprint = await session.get(Sprint, sprint_id)
+
+    # 第一层循环：处理 Stories
+    for story in sprint.stories:
+        # 第二层循环：加载 owner、添加前缀、计算统计
+        for task in story.tasks:
+            task.owner = await session.get(User, task.owner_id)  # N+1 问题！
+            task.full_name = f"{story.name} - {task.name}"
+        story.total_estimate = sum(t.estimate for t in story.tasks)
+
+    # 第三层循环：收集所有参与者（还需手动去重）
+    participants = []
+    for story in sprint.stories:
+        for task in story.tasks:
+            if task.owner not in participants:
+                participants.append(task.owner)
+
+    return sprint
+
+# 问题：多层嵌套循环 + N+1 查询 + 手动去重，业务逻辑被数据展开逻辑淹没
+```
+
+**Pydantic-Resolve 解决方案**：
+
+```python
+# ✅ 声明式：自动处理跨层数据传递
+class TaskResponse(BaseModel):
+    # 加载 owner，并发送给父节点的收集器
+    owner: Annotated[
+        Optional[UserResponse],
+        LoadBy('owner_id'),
+        SendTo('related_users')  # 发送到收集器
+    ] = None
+
+    full_name: str = ""
+    def post_full_name(self, ancestor_context):
+        story_name = ancestor_context.get('story_name')
+        return f"{story_name} - {self.name}"
+
+class StoryResponse(BaseModel):
+    name: Annotated[str, ExposeAs('story_name')]  # 暴露给子节点
+    tasks: list[TaskResponse] = []
+    total_estimate: int = 0
+    def post_total_estimate(self):
+        return sum(t.estimate for t in self.tasks)
+
+class SprintResponse(BaseModel):
+    stories: list[StoryResponse] = []
+
+    # 收集所有参与者（自动去重）
+    participants: list[UserResponse] = []
+    def post_participants(self, collector=Collector(alias='related_users')):
+        return collector.values()
+```
+
+**核心价值**：消除手动循环展开的噪音代码，让多层嵌套的业务逻辑变得简单。
+
 #### Expose：父节点向子节点暴露数据
 
 ```python

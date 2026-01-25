@@ -1267,6 +1267,72 @@ Execution order is carefully designed to ensure data dependency correctness. Fir
 
 ### 3.6 Cross-Layer Data Transfer
 
+#### Why is Cross-Layer Data Transfer Needed?
+
+In business scenarios, child nodes often need to access parent node data, or parent nodes need to aggregate child node data. Traditional approaches require additional loops to unfold data, resulting in verbose and hard-to-maintain code.
+
+**Problem Example**:
+
+```python
+# ❌ Traditional: multi-level nested loops
+async def get_sprint_with_stats(sprint_id: int, session: AsyncSession):
+    sprint = await session.get(Sprint, sprint_id)
+
+    # First level loop: process Stories
+    for story in sprint.stories:
+        # Second level loop: load owner, add prefixes, calculate stats
+        for task in story.tasks:
+            task.owner = await session.get(User, task.owner_id)  # N+1 problem!
+            task.full_name = f"{story.name} - {task.name}"
+        story.total_estimate = sum(t.estimate for t in story.tasks)
+
+    # Third level loop: collect all participants (need manual deduplication)
+    participants = []
+    for story in sprint.stories:
+        for task in story.tasks:
+            if task.owner not in participants:
+                participants.append(task.owner)
+
+    return sprint
+
+# Problem: multi-level nested loops + N+1 queries + manual deduplication
+```
+
+**Pydantic-Resolve Solution**:
+
+```python
+# ✅ Declarative: auto-handle cross-layer data transfer
+class TaskResponse(BaseModel):
+    # load owner and send to parent collector
+    owner: Annotated[
+        Optional[UserResponse],
+        LoadBy('owner_id'),
+        SendTo('related_users')  # send to collector
+    ] = None
+
+    full_name: str = ""
+    def post_full_name(self, ancestor_context):
+        story_name = ancestor_context.get('story_name')
+        return f"{story_name} - {self.name}"
+
+class StoryResponse(BaseModel):
+    name: Annotated[str, ExposeAs('story_name')]  # expose to children
+    tasks: list[TaskResponse] = []
+    total_estimate: int = 0
+    def post_total_estimate(self):
+        return sum(t.estimate for t in self.tasks)
+
+class SprintResponse(BaseModel):
+    stories: list[StoryResponse] = []
+
+    # collect all participants (auto-deduplication)
+    participants: list[UserResponse] = []
+    def post_participants(self, collector=Collector(alias='related_users')):
+        return collector.values()
+```
+
+**Core Value**: Eliminates noise code from manual loop unfolding, making multi-level nested business logic simple.
+
 #### Expose: Parent Exposes Data to Children
 
 ```python
