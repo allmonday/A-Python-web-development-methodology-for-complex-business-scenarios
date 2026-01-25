@@ -532,48 +532,151 @@ async def api_create_user(data: dict, session=Depends(get_session)):
 
 ## 3. Pydantic-Resolve：业务模型层
 
-### 3.1 核心概念
+[pydantic resolve 是什么?](https://github.com/allmonday/pydantic-resolve)
 
-Pydantic-Resolve 是一个基于 Pydantic 的数据组装工具，让你可以用**声明式**的方式构建复杂的数据结构。
+### 3.1 Pydantic-Resolve 的定位：业务模型层，而非 ORM 替代品
 
-#### 核心思想
+**重要澄清**：Pydantic-Resolve 不是要替代 SQLAlchemy，而是在其之上建立**独立的业务模型层**。
 
-> **"描述你想要什么，而不是如何获取"**
+```
+传统架构：
+┌─────────────────────────────┐
+│      API Layer              │
+│   (FastAPI Routes)          │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│   ORM Models (SQLAlchemy)   │  ← 既是数据模型，又是业务模型
+│   - 混淆了两个职责           │
+│   - 业务逻辑被数据库绑架      │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│      Database               │
+└─────────────────────────────┘
 
-```python
-# ❌ 命令式：如何获取
-async def get_teams_with_tasks():
-    teams = await get_teams()
-    for team in teams:
-        team.tasks = await get_tasks_by_team(team.id)  # N+1 问题
-        for task in team.tasks:
-            task.owner = await get_user(task.owner_id)  # 又是 N+1
-    return teams
 
-# ✅ 声明式：想要什么
-class TeamResponse(BaseModel):
-    id: int
-    name: str
-
-    tasks: list[TaskResponse] = []
-    def resolve_tasks(self, loader=Loader(team_to_tasks_loader)):
-        return loader.load(self.id)
-
-class TaskResponse(BaseModel):
-    id: int
-    name: str
-    owner_id: int
-
-    owner: Optional[UserResponse] = None
-    def resolve_owner(self, loader=Loader(user_loader)):
-        return loader.load(self.owner_id)
-
-# 使用
-teams = await query_teams_from_db()
-result = await Resolver().resolve(teams)
+Pydantic-Resolve 架构：
+┌─────────────────────────────┐
+│      API Layer              │
+│   (FastAPI Routes)          │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│   Response Models (Pydantic)│  ← 用例层：API 返回结构
+│   - 使用 LoadBy 自动解析     │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│   Entity + ERD              │  ← 业务模型层：纯粹的实体关系
+│   - 业务概念，无技术细节     │
+│   - 显式声明业务关系         │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│   Loaders (Repository)      │  ← 数据访问层：批量加载
+│   - 封装数据获取逻辑         │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│   ORM Models (SQLAlchemy)   │  ← 数据模型层：数据库映射
+│   - 只负责持久化             │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│      Database               │
+└─────────────────────────────┘
 ```
 
-这两种方式的本质差异在于关注点不同。命令式方法关注"如何获取"（how），需要开发者手动编写数据获取的逻辑，容易产生 N+1 查询问题。而声明式方法关注"想要什么"（what），通过描述数据结构来声明依赖关系，具体的数据获取逻辑由框架自动处理，既简化了代码又避免了性能陷阱。
+**关键区别**：
+
+1. **SQLAlchemy Models** 仍然存在，但职责单一：只负责数据库映射（`__tablename__`、`Column`、外键约束）
+2. **Entity + ERD** 是新增加的层：表达业务概念和业务关系，完全独立于数据库
+3. **Response Models** 是用例层：定义 API 返回结构，通过 `LoadBy` 自动使用 ERD 中的关系定义
+
+#### 如何解决 SQLAlchemy ORM 的核心问题
+
+回顾 1.2 节提到的 4 个核心问题，Pydantic-Resolve 通过以下方式解决：
+
+**问题 1：业务模型与数据模型混淆** ✅ 已解决
+
+```python
+# SQLAlchemy Model - 只负责数据映射
+class TeamEntity(Base):
+    """数据模型 - 技术实现"""
+    __tablename__ = 'teams'
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+
+# Entity - 表达业务概念
+class Team(BaseModel, BaseEntity):
+    """业务模型 - 业务概念"""
+    __relationships__ = [
+        Relationship(field='id', target_kls=list[SprintEntity], loader=...),
+        Relationship(field='id', target_kls=list[UserEntity], loader=...),
+    ]
+    id: int
+    name: str
+
+# 两者职责清晰：
+# - TeamEntity: 如何存储（数据库表结构）
+# - Team: 是什么（业务概念和关系）
+```
+
+**问题 2：依赖方向错误** ✅ 已解决
+
+```python
+# 正确的依赖方向
+API Layer (FastAPI)
+    ↓ 依赖
+Response Models (Pydantic)
+    ↓ 使用
+Entity + ERD (业务模型)  ← 最稳定，不依赖任何框架
+    ↓ 使用
+Loaders (数据访问)
+    ↓ 依赖
+ORM Models (SQLAlchemy)  ← 最外层，可替换
+
+# 业务规则完全独立于数据库
+# 当数据库变化时，只需修改 Loader，Entity 无需改动
+```
+
+**问题 3：缺少业务关系的显式声明** ✅ 已解决
+
+```python
+# ERD - 显式声明所有业务关系
+class TeamEntity(BaseModel, BaseEntity):
+    """团队实体"""
+    __relationships__ = [
+        # 团队有多个 Sprint（业务关系）
+        Relationship(field='id', target_kls=list[SprintEntity], loader=team_to_sprints_loader),
+        # 团队有多个成员（业务关系）
+        Relationship(field='id', target_kls=list[UserEntity], loader=team_to_users_loader),
+        # 团队有多个任务（业务关系）
+        Relationship(field='id', target_kls=list[TaskEntity], loader=team_to_tasks_loader),
+    ]
+    id: int
+    name: str
+
+# 优势：
+# 1. 所有的业务关系集中在一处定义
+# 2. 可以通过 Voyager 可视化查看
+# 3. 自动检查关系一致性
+# 4. 多个 Response Model 可以复用同一个关系定义
+```
+
+**问题 4：中间表的技术暴露** ✅ 前文已描述过
+
+两者不是替代关系，而是协作关系。SQLAlchemy 在底层负责高效的数据持久化，Pydantic-Resolve 在上层负责清晰的业务建模和数据组装。通过 Loader 连接两层，实现了业务模型与技术实现的完全解耦。
+
+我们会在后续章节详细介绍每个部份。
 
 ### 3.2 ERD：业务关系的声明
 
