@@ -529,48 +529,151 @@ Deeper problems include:
 
 ## 3. Pydantic-Resolve: The Business Model Layer
 
-### 3.1 Core Concepts
+[What is pydantic-resolve?](https://github.com/allmonday/pydantic-resolve)
 
-Pydantic-Resolve is a data assembly tool based on Pydantic that allows you to build complex data structures in a **declarative** manner.
+### 3.1 Pydantic-Resolve's Positioning: Business Model Layer, Not ORM Replacement
 
-#### Core Philosophy
+**Important Clarification**: Pydantic-Resolve is not meant to replace SQLAlchemy, but to establish an **independent business model layer** on top of it.
 
-> **"Describe what you want, not how to fetch it"**
+```
+Traditional Architecture:
+┌─────────────────────────────┐
+│      API Layer              │
+│   (FastAPI Routes)          │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│   ORM Models (SQLAlchemy)   │  ← Both data model AND business model
+│   - Mixes two responsibilities │
+│   - Business logic held hostage by database │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│      Database               │
+└─────────────────────────────┘
 
-```python
-# ❌ Imperative: how to fetch
-async def get_teams_with_tasks():
-    teams = await get_teams()
-    for team in teams:
-        team.tasks = await get_tasks_by_team(team.id)  # N+1 problem
-        for task in team.tasks:
-            task.owner = await get_user(task.owner_id)  # N+1 again
-    return teams
 
-# ✅ Declarative: what you want
-class TeamResponse(BaseModel):
-    id: int
-    name: str
-
-    tasks: list[TaskResponse] = []
-    def resolve_tasks(self, loader=Loader(team_to_tasks_loader)):
-        return loader.load(self.id)
-
-class TaskResponse(BaseModel):
-    id: int
-    name: str
-    owner_id: int
-
-    owner: Optional[UserResponse] = None
-    def resolve_owner(self, loader=Loader(user_loader)):
-        return loader.load(self.owner_id)
-
-# usage
-teams = await query_teams_from_db()
-result = await Resolver().resolve(teams)
+Pydantic-Resolve Architecture:
+┌─────────────────────────────┐
+│      API Layer              │
+│   (FastAPI Routes)          │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│   Response Models (Pydantic)│  ← Use case layer: API return structure
+│   - Uses LoadBy to resolve  │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│   Entity + ERD              │  ← Business model layer: pure entity relationships
+│   - Business concepts, no technical details │
+│   - Explicit business relationships │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│   Loaders (Repository)      │  ← Data access layer: batch loading
+│   - Encapsulates data fetching │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│   ORM Models (SQLAlchemy)   │  ← Data model layer: database mapping
+│   - Only responsible for persistence │
+└──────────┬──────────────────┘
+           │
+           ↓
+┌─────────────────────────────┐
+│      Database               │
+└─────────────────────────────┘
 ```
 
-The essential difference between these two approaches lies in their focus. The imperative approach focuses on "how to fetch"—developers manually write data fetching logic, easily leading to N+1 query problems. The declarative approach focuses on "what you want"—by describing data structure to declare dependencies, while the framework automatically handles the actual data fetching logic. This simplifies code while avoiding performance traps.
+**Key Differences**:
+
+1. **SQLAlchemy Models** still exist but have a single responsibility: only handle database mapping (`__tablename__`, `Column`, foreign key constraints)
+2. **Entity + ERD** is a newly added layer: expresses business concepts and business relationships, completely independent of the database
+3. **Response Models** are the use case layer: define API return structures, automatically use relationship definitions from ERD through `LoadBy`
+
+#### How Pydantic-Resolve Solves SQLAlchemy ORM's Core Problems
+
+Recall the 4 core problems mentioned in section 1.2. Pydantic-Resolve solves them as follows:
+
+**Problem 1: Confusion Between Business Model and Data Model** ✅ Solved
+
+```python
+# SQLAlchemy Model - only responsible for data mapping
+class TeamEntity(Base):
+    """Data model - technical implementation"""
+    __tablename__ = 'teams'
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+
+# Entity - expresses business concept
+class Team(BaseModel, BaseEntity):
+    """Business model - business concept"""
+    __relationships__ = [
+        Relationship(field='id', target_kls=list[SprintEntity], loader=...),
+        Relationship(field='id', target_kls=list[UserEntity], loader=...),
+    ]
+    id: int
+    name: str
+
+# Clear responsibilities:
+# - TeamEntity: how to store (database table structure)
+# - Team: what it is (business concept and relationships)
+```
+
+**Problem 2: Wrong Dependency Direction** ✅ Solved
+
+```python
+# Correct dependency direction
+API Layer (FastAPI)
+    ↓ depends on
+Response Models (Pydantic)
+    ↓ uses
+Entity + ERD (business model)  ← Most stable, doesn't depend on any framework
+    ↓ uses
+Loaders (data access)
+    ↓ depends on
+ORM Models (SQLAlchemy)  ← Outermost layer, replaceable
+
+# Business rules completely independent of database
+# When database changes, only need to modify Loader, Entity remains unchanged
+```
+
+**Problem 3: Lack of Explicit Business Relationship Declaration** ✅ Solved
+
+```python
+# ERD - explicitly declare all business relationships
+class TeamEntity(BaseModel, BaseEntity):
+    """Team entity"""
+    __relationships__ = [
+        # Team has multiple Sprints (business relationship)
+        Relationship(field='id', target_kls=list[SprintEntity], loader=team_to_sprints_loader),
+        # Team has multiple members (business relationship)
+        Relationship(field='id', target_kls=list[UserEntity], loader=team_to_users_loader),
+        # Team has multiple tasks (business relationship)
+        Relationship(field='id', target_kls=list[TaskEntity], loader=team_to_tasks_loader),
+    ]
+    id: int
+    name: str
+
+# Advantages:
+# 1. All business relationships defined in one place
+# 2. Can view through Voyager visualization
+# 3. Automatically check relationship consistency
+# 4. Multiple Response Models can reuse the same relationship definition
+```
+
+**Problem 4: Technical Exposure of Intermediate Tables** ✅ Described earlier
+
+They are not a replacement relationship, but a collaborative one. SQLAlchemy handles efficient data persistence at the bottom layer, while Pydantic-Resolve handles clear business modeling and data assembly at the upper layer. Through Loaders connecting the two layers, complete decoupling of business models from technical implementation is achieved.
+
+We will cover each part in detail in subsequent sections.
 
 ### 3.2 ERD: Declaring Business Relationships
 
