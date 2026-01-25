@@ -498,9 +498,7 @@ def task_entity_to_orm(entity: TaskEntity) -> Task:
 - **Business Rules 不应该知道数据库表结构**
 - **Use Cases 不应该知道 HTTP 协议的细节**
 
-### 2.3 在 Web 开发中的应用
-
-#### 传统架构的问题
+### 2.3 传统架构的问题
 
 ```python
 # 传统方式：所有层次耦合

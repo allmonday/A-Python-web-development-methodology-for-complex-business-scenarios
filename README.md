@@ -495,9 +495,7 @@ In web development, dependency rules can be understood as follows:
 - **Business Rules shouldn't know about database table structures**
 - **Use Cases shouldn't know about HTTP protocol details**
 
-### 2.3 Application in Web Development
-
-#### Problems with Traditional Architecture
+### 2.3 Problems with Traditional Architecture
 
 ```python
 # Traditional approach: all layers coupled
